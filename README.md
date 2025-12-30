@@ -7,8 +7,8 @@ This repository contains code and scripts for a **multi-stage training pipeline*
 ## Install
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+conda create -n transcity-vlm python=3.10
+conda activate transcity-vlm
 pip install -r requirements.txt
 ```
 
@@ -63,7 +63,7 @@ bash run_stageC_ds.sh
 ### GRPO (RL fine-tuning)
 
 ```bash
-export DECODER_NAME_OR_PATH="tiiuae/Falcon3-7B-Instruct"   # or your own
+export DECODER_NAME_OR_PATH="Qwen/Qwen3-8B"   # or your own
 export ENCODER_NAME_OR_PATH="FacebookAI/roberta-large"     # or your own
 export SFT_DIR="outputs_sft"
 export TRAIN_JSONL_REASON="dataset/train_dataset_reason.jsonl"
