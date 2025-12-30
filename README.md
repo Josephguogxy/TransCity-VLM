@@ -23,33 +23,6 @@ A research-oriented codebase for **multimodal forecasting** (e.g., traffic flow 
 
 ## ✨ Demos / Figures
 
-All figures are stored in `assets/`.
-
-**Fig. 1 — Data-to-Reasoning Traceability**
-<p align="center">
-  <img src="assets/Data-To-Reasoning.svg" width="820" alt="Fig.1 Data-to-Reasoning Traceability"/>
-</p>
-
-**Fig. 2 — Expert-Level Interpretability**
-<p align="center">
-  <img src="assets/Expert-Interpretability.svg" width="820" alt="Fig.2 Expert-Level Interpretability"/>
-</p>
-
-**Fig. 3 — MoMExp Nets Interpretability**
-<p align="center">
-  <img src="assets/mapExplain.svg" width="820" alt="Fig.3 MoMExp Nets Interpretability"/>
-</p>
-
-**Fig. 4 — Agent-driven Evidence Workflow (Plan DAG + Traceable Records)**
-<p align="center">
-  <img src="assets/agent-framework-A1.svg" width="920" alt="Fig.4 Agent-driven Evidence Workflow"/>
-</p>
-
-**Fig. 5 — Safety Control System**
-<p align="center">
-  <img src="assets/SafetyControlSystem.svg" width="820" alt="Fig.5 Safety Control System"/>
-</p>
-
 ---
 
 ## Brief Introduction
