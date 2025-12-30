@@ -47,7 +47,7 @@ SMARTCITY_FEATURES = Features({
         "HopSensor": Sequence(Value("string")),
         "HopBA":     Sequence(Value("string")),
     },
-    "images":   Sequence(Value("string")),  # List of paths/URIs (no decoding here)
+    "images":   Sequence(Value("string")),  # list of paths/URIs; decoding is handled in the collator
     "prompt":   Value("string"),
     "thinking": Sequence(Value("string")),
     "target":   Value("string"),
@@ -64,6 +64,7 @@ def _is_rank0() -> bool:
     except Exception:
         return True
 
+
 def _dprint(*args, **kwargs):
     if _is_rank0() and SMARTCITY_DEBUG:
         print(*args, **kwargs)
@@ -72,7 +73,9 @@ def _dprint(*args, **kwargs):
 # dict helpers
 # =========================
 def _get_ci(d: Dict[str, Any] | None, key: str, default=None, aliases: tuple[str, ...] = ()) -> Any:
-    """Case-insensitive lookup; supports aliases."""
+    """
+    Case-insensitive key lookup with optional aliases.
+    """
     if d is None:
         return default
     if not isinstance(d, Mapping):
@@ -94,8 +97,12 @@ def _get_ci(d: Dict[str, Any] | None, key: str, default=None, aliases: tuple[str
             continue
     return default
 
+
 def _normalize_chunks_ci(raw: Dict[str, Any] | None) -> Dict[str, list[str]]:
-    """Normalize chunks according to FIELD_ORDER (case-insensitive); fill missing fields with empty lists."""
+    """
+    Normalize `chunks` using FIELD_ORDER with case-insensitive keys.
+    Missing fields are filled with empty lists.
+    """
     out: Dict[str, list[str]] = {}
     src = raw if isinstance(raw, dict) else {}
     for canon in FIELD_ORDER:
@@ -118,13 +125,14 @@ def _validate_prompt_style(prompt_style: str) -> str:
         raise ValueError(f"prompt_style must be one of {sorted(PROMPT_STYLES)}; got {prompt_style!r}")
     return s
 
+
 def _format_message(role: str, text: str, *, prompt_style: str) -> str:
     prompt_style = _validate_prompt_style(prompt_style)
     role = (role or "").strip().lower()
     text = (text or "").strip()
 
     if prompt_style == PROMPT_STYLE_PLAIN:
-        # plain: minimal readable format, supports multi-turn chat
+        # Minimal human-readable format for multi-turn conversations
         if role == "system":
             return f"System: {text}".strip()
         if role == "user":
@@ -138,6 +146,7 @@ def _format_message(role: str, text: str, *, prompt_style: str) -> str:
         return ""
     return f"<|im_start|>{role}\n{text}<|im_end|>"
 
+
 def _build_prompt_from_messages(
     msgs: list,
     *,
@@ -146,9 +155,11 @@ def _build_prompt_from_messages(
     add_generation_prompt: bool = True,
 ) -> Tuple[str, str, List[str]]:
     """
-    Build a prompt from multi-turn messages (in order).
-    - drop_last_assistant=True: treat the last assistant message as the label (exclude it from prompt history)
-    - add_generation_prompt=True: append an "open" assistant segment at the end
+    Convert multi-turn `messages` into a single prompt by concatenation.
+
+    - drop_last_assistant=True: treat the last assistant message as label and exclude it from prompt history.
+    - add_generation_prompt=True: append an "open assistant" segment at the end.
+
     Returns: (prompt, last_assistant_text, images_from_user_turns)
     """
     prompt_style = _validate_prompt_style(prompt_style)
@@ -208,7 +219,7 @@ def _build_prompt_from_messages(
             if role in ("system", "user", "assistant"):
                 parsed.append({"role": role, "text": text})
 
-    # last assistant
+    # Find last assistant text (used as fallback label)
     last_asst_text = ""
     last_asst_idx = None
     for i in range(len(parsed) - 1, -1, -1):
@@ -240,7 +251,7 @@ def _build_prompt_from_messages(
             parts.append("<|im_start|>assistant\n")
         prompt = "\n".join(parts)
 
-    # Deduplicate images while preserving order
+    # Stable de-dup (preserve order)
     seen = set()
     images_dedup: List[str] = []
     for p in images:
@@ -250,10 +261,13 @@ def _build_prompt_from_messages(
 
     return prompt, last_asst_text, images_dedup
 
+
 def _inject_markers_before_open_assistant(prompt: str, markers: List[str]) -> str:
     """
-    Insert the marker block right before the final "open assistant" segment (if present).
-    Goal: ensure the collator's "single insertion block" consistently lands near the end.
+    Insert markers right before the last "open assistant" anchor (if present).
+
+    This makes collator marker handling stable by placing a single marker block
+    close to the generation point.
     """
     prompt = prompt or ""
     markers = [m for m in markers if m]
@@ -270,6 +284,27 @@ def _inject_markers_before_open_assistant(prompt: str, markers: List[str]) -> st
 # =========================
 # I/O
 # =========================
+def _is_remote_uri(p: str) -> bool:
+    p = (p or "").strip().lower()
+    return p.startswith(("http://", "https://", "s3://", "gs://", "file://"))
+
+
+def _resolve_paths_under(base_dir: str, paths: list[str]) -> list[str]:
+    base_dir = os.path.abspath(base_dir)
+    out = []
+    for p in paths or []:
+        if not isinstance(p, str):
+            continue
+        p = p.strip()
+        if not p:
+            continue
+        if os.path.isabs(p) or _is_remote_uri(p):
+            out.append(p)
+        else:
+            out.append(os.path.normpath(os.path.join(base_dir, p)))
+    return out
+
+
 def load_jsonl_dataset(
     path: str | Path,
     split_name: str = "train",
@@ -279,6 +314,7 @@ def load_jsonl_dataset(
 ) -> HFDataset:
     return _load_via_generator_flat(str(path), split_name, prompt_style=prompt_style, ensure_markers=ensure_markers)
 
+
 def save_dataset_jsonl(ds: HFDataset, out_path: str | Path) -> None:
     p = Path(out_path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -286,8 +322,11 @@ def save_dataset_jsonl(ds: HFDataset, out_path: str | Path) -> None:
         for r in ds:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
+
 def _load_via_generator_flat(path: str, split_name: str, *, prompt_style: str, ensure_markers: bool) -> HFDataset:
     prompt_style = _validate_prompt_style(prompt_style)
+
+    base_dir = os.path.abspath(os.path.dirname(path))
 
     def gen():
         bad = 0
@@ -313,7 +352,9 @@ def _load_via_generator_flat(path: str, split_name: str, *, prompt_style: str, e
                         raise RuntimeError(f"Too many bad lines: {bad} (limit={SMARTCITY_MAX_BAD_LINES}). Last at {ln}")
                     continue
 
-                yield _normalize_row_core(obj, prompt_style=prompt_style, ensure_markers=ensure_markers)
+                row = _normalize_row_core(obj, prompt_style=prompt_style, ensure_markers=ensure_markers)
+                row["images"] = _resolve_paths_under(base_dir, row.get("images", []) or [])
+                yield row
 
                 if _is_rank0() and SMARTCITY_DEBUG and (ln % SMARTCITY_LOG_EVERY == 0):
                     _dprint(f"[JSONL] parsed {ln:,} lines ... (bad={bad})")
@@ -331,9 +372,13 @@ def _normalize_row_core(
     ensure_markers: bool = True,
 ) -> Dict[str, Any]:
     """
-    Normalize to SMARTCITY_FEATURES:
+    Normalize a raw example into SMARTCITY_FEATURES:
       {task, chunks, images, prompt, thinking, target, answer}
-    Supports multi-turn messages: build the prompt in order and use the last assistant turn as a fallback label.
+
+    Supports multi-turn `messages`:
+      - build `prompt` from messages
+      - use last assistant message as fallback label (target/answer)
+      - collect image paths/URIs from user turns
     """
     prompt_style = _validate_prompt_style(prompt_style)
 
@@ -390,7 +435,7 @@ def _normalize_row_core(
         if not prompt and prompt_from_msgs:
             prompt = prompt_from_msgs
 
-        # merge images
+        # merge images (stable de-dup)
         seen = set()
         merged: List[str] = []
         for p in (images_top + imgs_from_msgs):
@@ -399,7 +444,7 @@ def _normalize_row_core(
                 merged.append(p)
         images = merged
 
-        # fill answer/target fallback
+        # fill answer/target fallback from last assistant content
         tname = task.lower()
         if tname == "understand":
             if (not target) and last_asst_text:
@@ -408,7 +453,7 @@ def _normalize_row_core(
             if (not answer) and last_asst_text:
                 answer = last_asst_text
 
-    # ensure markers (recommended: insert only once, right before the final open assistant segment)
+    # Insert markers at most once, and place them near the open assistant anchor
     if ensure_markers and prompt:
         has_chunks = any((len(v) > 0) for v in (chunks or {}).values())
         has_images = len(images) > 0
@@ -426,7 +471,7 @@ def _normalize_row_core(
     out["target"] = target
     out["images"] = images
 
-    # fallback keys
+    # final fallbacks
     for k in ("prompt", "answer", "target"):
         if k not in out or out[k] is None:
             out[k] = ""
@@ -444,8 +489,8 @@ def ensure_smartcity_features(
     num_proc: int = 16,
     prompt_style: str = PROMPT_STYLE_QWEN3,
     ensure_markers: bool = True,
-    messages_policy: str = "to_prompt",   # Kept for backward compatibility
-    fold_messages_to: str = "News",        # Kept for backward compatibility
+    messages_policy: str = "to_prompt",   # kept for backward compatibility
+    fold_messages_to: str = "News",        # kept for backward compatibility
 ) -> HFDataset:
     prompt_style = _validate_prompt_style(prompt_style)
     expected_cols = set(SMARTCITY_FEATURES.keys())
@@ -501,11 +546,12 @@ def _chunk_by_token_ids(
 # =========================
 def _split_prompt_by_first_marker_block(prompt: str) -> Tuple[str, str]:
     """
-    A splitting strategy that works better for multi-turn prompts:
-    - find the first marker (chunk or image) position l
-    - starting from l, consume the contiguous block consisting of marker/whitespace/marker/...
-    - prefix=prompt[:l], suffix=prompt[r:]
-    - remove any remaining markers from suffix (avoid exposing marker text to the model)
+    Multi-turn friendly splitting:
+    - find the first occurrence of a marker (chunk or image)
+    - starting from that index, consume a contiguous block consisting of:
+      whitespace + marker + whitespace + marker + ...
+    - prefix = prompt[:l], suffix = prompt[r:]
+    - remove any remaining markers from suffix to avoid leaking marker text to the model
     """
     prompt = prompt or ""
     idx_chunk = prompt.find(CHUNK_MARKER)
@@ -516,7 +562,7 @@ def _split_prompt_by_first_marker_block(prompt: str) -> Tuple[str, str]:
 
     l = min(idxs)
     r = l
-    # Consume a contiguous "whitespace + marker" block
+    # Consume a contiguous block of: whitespace + marker + whitespace + marker ...
     while True:
         advanced = False
         while r < len(prompt) and prompt[r].isspace():
@@ -535,12 +581,12 @@ def _split_prompt_by_first_marker_block(prompt: str) -> Tuple[str, str]:
 
     pre = prompt[:l]
     suf = prompt[r:]
-    # Clean residual markers in suffix (avoid semantic confusion from multiple marker occurrences)
+    # Remove any remaining markers in suffix to avoid confusing the model
     suf = suf.replace(CHUNK_MARKER, "").replace(IMAGE_MARKER, "")
     return pre, suf
 
 # =========================
-# collator (multimodal kept)
+# collator (multimodal)
 # =========================
 class DataCollatorSmartCity:
     def __init__(
@@ -548,29 +594,28 @@ class DataCollatorSmartCity:
         tokenizer: PreTrainedTokenizerBase,
         *,
         # chunk
-        chunk_tokenizer: Optional[PreTrainedTokenizerBase] = None,  # roberta tokenizer
+        chunk_tokenizer: Optional[PreTrainedTokenizerBase] = None,  # e.g. RoBERTa tokenizer
         chunk_size_tokens: int = 510,
         chunk_overlap: int = 0,
         join_fields_before_chunk: bool = True,
         add_field_header: bool = True,
 
         # image
-        max_images_per_sample: int = 1,     # cap (per-sample limit)
-        image_size: int = 384,              # Ensure 384 (SigLIP)
+        max_images_per_sample: int = 1,     # per-sample cap
+        image_size: int = 384,              # ensure matches your vision encoder's expected resolution
 
         # length/pad
         max_length: Optional[int] = None,
         pad_token_id: Optional[int] = None,
         label_pad_token_id: int = -100,
 
-        # seg masks
+        # segment masks
         use_seg_masks: bool = True,
 
         # IMPORTANT: must match model config
         chunk_token_factor: int = 4,  # == model.num_chunk_tokens
         image_token_factor: int = 64, # == model.num_image_tokens
 
-        # Added: accept this parameter
         max_chunks_per_sample: Optional[int] = None,
 
         add_eos_to_labels: bool = True,
@@ -586,7 +631,6 @@ class DataCollatorSmartCity:
         self.max_images_per_sample = max(0, int(max_images_per_sample))
         self.image_size = int(image_size)
 
-        # Store parameter
         self.max_chunks_per_sample = int(max_chunks_per_sample) if max_chunks_per_sample is not None else None
 
         self.max_len = max_length or getattr(tokenizer, "model_max_length", 2048)
@@ -606,14 +650,24 @@ class DataCollatorSmartCity:
         self.add_eos_to_labels = bool(add_eos_to_labels)
         self.wrap_reason_with_tags = bool(wrap_reason_with_tags)
 
-        # --- image transform (keep your old CLIP-like norm) ---
+        # Image transform (CLIP/SigLIP-style normalization)
         import torchvision.transforms as T
         self._img_tf = T.Compose([
             T.Resize((self.image_size, self.image_size), interpolation=T.InterpolationMode.BICUBIC),
             T.ToTensor(),
-            # Normalization commonly used for SigLIP / ViT-22B and similar models
+            # SigLIP / ViT-22B-like normalization
             T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ])
+
+        # Missing/corrupt image guardrails
+        self.max_missing_image_ratio = 0.20
+        self.min_images_to_check = 200
+        self.hard_fail_on_missing = True
+
+        self._img_total = 0
+        self._img_missing = 0
+        self._img_missing_examples: List[str] = []
+        self._img_missing_examples_cap = 20
 
     def _tok_ids(self, text: str) -> List[int]:
         return self.tok(text, add_special_tokens=False, truncation=False)["input_ids"]
@@ -686,11 +740,19 @@ class DataCollatorSmartCity:
                 paths = img_paths_per_ex[i]
                 tensors: List[torch.Tensor] = []
                 for p in paths[:batch_max_images]:
+                    self._img_total += 1
                     try:
+                        if (not _is_remote_uri(p)) and (not os.path.exists(p)):
+                            raise FileNotFoundError(p)
+
                         im = self._to_pil(p)
                         tensors.append(self._img_tf(im))
-                    except Exception:
+                    except Exception as e:
+                        self._img_missing += 1
+                        if len(self._img_missing_examples) < self._img_missing_examples_cap:
+                            self._img_missing_examples.append(f"{p} | {type(e).__name__}: {e}")
                         tensors.append(torch.zeros(3, self.image_size, self.image_size))
+
                 if len(tensors) < batch_max_images:
                     tensors += [torch.zeros(3, self.image_size, self.image_size)] * (batch_max_images - len(tensors))
                 pv_list.append(torch.stack(tensors, dim=0))
@@ -698,7 +760,18 @@ class DataCollatorSmartCity:
             pixel_values = torch.stack(pv_list, dim=0)
             n_images = torch.tensor(n_images_list, dtype=torch.long)
 
-        # ========== B) chunks: join field -> chunk by encoder tokens ==========
+            if self.hard_fail_on_missing and self._img_total >= self.min_images_to_check:
+                ratio = self._img_missing / max(1, self._img_total)
+                if ratio > self.max_missing_image_ratio:
+                    examples = "\n".join(self._img_missing_examples[:10])
+                    raise RuntimeError(
+                        f"[SmartCity] missing/corrupt images too many: "
+                        f"{self._img_missing}/{self._img_total} ({ratio:.2%}) "
+                        f"> {self.max_missing_image_ratio:.2%}\n"
+                        f"Examples:\n{examples}"
+                    )
+
+        # ========== B) chunks: join fields -> chunk by encoder tokens ==========
         chunk_txts: List[List[str]] = []
         for ex in batch:
             rows = ex.get("chunks", {}) or {}
@@ -831,8 +904,8 @@ class DataCollatorSmartCity:
         max_ans_len = max((len(x) for x in ans_ids), default=1)
 
         raw_max_chunks = max((len(x) for x in chunk_txts), default=0)
-        
-        # Limit raw chunk count using max_chunks_per_sample
+
+        # Apply max_chunks_per_sample cap to raw chunks
         if self.max_chunks_per_sample is not None and self.max_chunks_per_sample > 0:
             raw_max_chunks = min(raw_max_chunks, self.max_chunks_per_sample)
 
