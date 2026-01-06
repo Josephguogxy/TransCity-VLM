@@ -110,7 +110,7 @@ TransCity-VLM
 │     ├─ loss.py
 │     ├─ rewards.py
 │     └─ rollout.py
-├─ traffic_service/
+├─ agentic_system/
 │  ├─ cli.py
 │  ├─ config.py
 │  ├─ schemas.py
