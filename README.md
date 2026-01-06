@@ -1,4 +1,4 @@
-# trafficPrediction (SmartCityLLM) — Multimodal Forecasting with Stage A/B/C + GRPO
+# TransCity-VLM — Multimodal Forecasting with Stage A/B/C + GRPO
 
 [![License](https://img.shields.io/badge/license-See%20LICENSE-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-brightgreen.svg)](#environment)
@@ -6,10 +6,10 @@
 
 A research-oriented codebase for **multimodal forecasting** (e.g., traffic flow / electricity load) with a **multi-stage training pipeline**:
 
-- **Stage-A**: multimodal warm-up / alignment (train encoders & adapters; optionally freeze decoder)
-- **Stage-B**: supervised multi-task training (prediction + reasoning)
-- **Stage-C**: further tuning (e.g., MixLoRA FFN-only; task-balanced sampling)
-- **GRPO** (optional): RL-style fine-tuning for reasoning quality (Qwen3-aligned rules)
+- **Stage-A**: multimodal warm-up / alignment
+- **Stage-B**: supervised multi-task training
+- **Stage-C**: further tuning
+- **Stage-D**: RL-style fine-tuning for reasoning quality
 
 > ⚠️ Data and checkpoints are not shipped. You must prepare your own JSONL datasets and model weights.
 
@@ -53,7 +53,7 @@ The core pipeline uses:
   - [Stage A](#stage-a)
   - [Stage B](#stage-b)
   - [Stage C](#stage-c)
-  - [GRPO RL (optional)](#grpo-rl-optional)
+  - [Stage-D](#Stage-d)
 - [Inference & Evaluation](#inference--evaluation)
 - [Serving / Integration](#serving--integration)
 - [Tokenizer & Vocab Policy (No New Tokens)](#tokenizer--vocab-policy-no-new-tokens)
@@ -212,8 +212,6 @@ conda activate trafficPrediction
 pip install -r requirements.txt
 ```
 
-> Tip: For Stage-A/B DeepSpeed training, you need a working CUDA + NCCL environment.
-
 ---
 
 ## Training
@@ -258,7 +256,7 @@ export OUTPUT_DIR="outputs/stageC"
 bash run_stageC_ds.sh
 ```
 
-### GRPO RL
+### Stage-D
 
 ```bash
 export SFT_DIR="outputs/stageC"
@@ -313,6 +311,6 @@ This codebase builds on open-source libraries such as:
 - PyTorch
 - Hugging Face Transformers / Datasets
 - DeepSpeed (for distributed training)
-- (Optional) Accelerate / TRL for RL-related utilities
+- Accelerate / TRL for RL-related utilities
 
 We thank the open-source community for these tools.
