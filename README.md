@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/TransCityLogo.svg" alt="TransCity-VLM Logo" width="180">
+</p>
+
 # TransCity-VLM — Multimodal Forecasting with Stage A/B/C + GRPO
 
 [![License](https://img.shields.io/badge/license-See%20LICENSE-blue.svg)](LICENSE)
