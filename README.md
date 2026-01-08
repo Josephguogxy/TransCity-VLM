@@ -2,7 +2,7 @@
   <img src="assets/TransCityLogo.svg" alt="TransCity-VLM Logo" width="180">
 </p>
 
-# TransCity-VLM — Multimodal Forecasting with Stage A/B/C + GRPO
+# An Interpretable Vision–Language Foundation Model for Sustainable Smart Cities with Physical World Data-to-Reasoning Traceability
 
 [![License](https://img.shields.io/badge/license-See%20LICENSE-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-brightgreen.svg)](#environment)
