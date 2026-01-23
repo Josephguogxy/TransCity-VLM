@@ -1,6 +1,3 @@
-# Copyright (c) 2024 torchtorch Authors.
-# Licensed under the Apache License, Version 2.0
-
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -23,7 +20,12 @@ class RolloutBatch:
     image_mask: torch.Tensor
 
     completion_ids: torch.LongTensor
-    completion_mask: torch.LongTensor
+
+    # IMPORTANT:
+    # - stop_mask: for correct conditioning/logp computation (includes think tokens)
+    # - loss_mask: for RL loss (by default only answer-after-</think>)
+    stop_mask: torch.LongTensor
+    loss_mask: torch.LongTensor
 
     old_per_token_logps: Optional[torch.Tensor]
     ref_per_token_logps: Optional[torch.Tensor]
@@ -37,6 +39,31 @@ def _repeat_interleave_any(x, repeats: int):
     if torch.is_tensor(x):
         return x.repeat_interleave(repeats, dim=0)
     return sum(([a] * repeats for a in x), [])
+
+
+def _build_loss_mask_answer_only(
+    completion_ids: torch.LongTensor,
+    stop_mask: torch.LongTensor,
+    think_close_id: Optional[int],
+) -> torch.LongTensor:
+    """
+    loss_mask = stop_mask but zero-out tokens up to and including first </think>.
+    NOTE: We do NOT change stop_mask used in attention/logp, only loss masking.
+    """
+    if think_close_id is None or not isinstance(think_close_id, int) or think_close_id < 0:
+        return stop_mask
+
+    B, T = completion_ids.shape
+    loss_mask = stop_mask.clone()
+
+    for b in range(B):
+        valid = stop_mask[b].bool()
+        hits = torch.nonzero((completion_ids[b] == int(think_close_id)) & valid, as_tuple=False)
+        if hits.numel() > 0:
+            j = int(hits[0].item())
+            loss_mask[b, : j + 1] = 0
+
+    return loss_mask
 
 
 @torch.no_grad()
@@ -54,6 +81,7 @@ def rollout_and_cache(
     m = accelerator.unwrap_model(model)
     m.eval()
 
+    # ---- metas ----
     metas_in = batch.get("meta", None)
     if metas_in is None:
         B0 = batch["prefix_ids"].size(0)
@@ -64,13 +92,11 @@ def rollout_and_cache(
             if isinstance(m0, ExampleMeta):
                 metas.append(m0)
             elif isinstance(m0, dict):
-                metas.append(
-                    ExampleMeta(
-                        task=str(m0.get("task", "") or ""),
-                        target=str(m0.get("target", "") or ""),
-                        answer=str(m0.get("answer", "") or ""),
-                    )
-                )
+                metas.append(ExampleMeta(
+                    task=str(m0.get("task", "") or ""),
+                    target=str(m0.get("target", "") or ""),
+                    answer=str(m0.get("answer", "") or ""),
+                ))
             else:
                 metas.append(ExampleMeta(task="", target="", answer=""))
 
@@ -109,9 +135,9 @@ def rollout_and_cache(
             rep[k] = _repeat_interleave_any(batch[k].to(dev), cfg.num_generations)
 
     chunk_embeds_rep = chunk_embeds.repeat_interleave(cfg.num_generations, dim=0).to(dev, dtype=dtype)
-    chunk_mask_rep = chunk_mask.repeat_interleave(cfg.num_generations, dim=0).to(dev)
+    chunk_mask_rep   = chunk_mask.repeat_interleave(cfg.num_generations, dim=0).to(dev)
     image_embeds_rep = image_embeds.repeat_interleave(cfg.num_generations, dim=0).to(dev, dtype=dtype)
-    image_mask_rep = image_mask.repeat_interleave(cfg.num_generations, dim=0).to(dev)
+    image_mask_rep   = image_mask.repeat_interleave(cfg.num_generations, dim=0).to(dev)
 
     # ---- 3) generate ----
     stop_ids = cfg.stop_token_ids
@@ -155,21 +181,26 @@ def rollout_and_cache(
             stop_token_ids=stop_ids,
         )
 
-    completion_mask = make_stop_mask(
+    stop_mask = make_stop_mask(
         completion_ids,
         eos_id=tokenizer.eos_token_id,
         stop_token_ids=stop_ids,
     )
 
+    # loss mask: answer-only after </think>
+    loss_mask = stop_mask
+    if getattr(cfg, "loss_on_answer_only", False):
+        close_id = tokenizer.convert_tokens_to_ids("</think>")
+        close_id = int(close_id) if isinstance(close_id, int) and close_id >= 0 else None
+        loss_mask = _build_loss_mask_answer_only(completion_ids, stop_mask, close_id)
+
     # ---- 4) decode -> reward ----
     texts = tokenizer.batch_decode(
-        [ids[msk.bool()].tolist() for ids, msk in zip(completion_ids, completion_mask)],
+        [ids[msk.bool()].tolist() for ids, msk in zip(completion_ids, stop_mask)],
         skip_special_tokens=False,
         clean_up_tokenization_spaces=False,
     )
     reward_list = compute_rewards(texts, metas_rep)
-
-    # Use dev (decoder embedding device) to avoid device mismatches
     rewards = torch.tensor(reward_list, device=dev, dtype=torch.float32)
 
     # ---- group advantage ----
@@ -181,13 +212,14 @@ def rollout_and_cache(
     advantages = advantages.reshape(-1).to(dev)
 
     # ---- 5) old logps + optional ref logps ----
+    # IMPORTANT: logps must be computed with stop_mask (correct conditioning).
     old_logps = get_per_token_logps_smartcity(
         m,
         prefix_ids=rep["prefix_ids"], prefix_mask=rep["prefix_mask"],
         suffix_ids=rep["suffix_ids"], suffix_mask=rep["suffix_mask"],
         chunk_embeds=chunk_embeds_rep, chunk_mask=chunk_mask_rep,
         image_embeds=image_embeds_rep, image_mask=image_mask_rep,
-        completion_ids=completion_ids, completion_mask=completion_mask,
+        completion_ids=completion_ids, completion_mask=stop_mask,
         task_ids=rep.get("task_ids", None),
         temperature=cfg.temperature,
         micro_batch_size=micro_batch_logps,
@@ -203,7 +235,7 @@ def rollout_and_cache(
             suffix_ids=rep["suffix_ids"], suffix_mask=rep["suffix_mask"],
             chunk_embeds=chunk_embeds_rep, chunk_mask=chunk_mask_rep,
             image_embeds=image_embeds_rep, image_mask=image_mask_rep,
-            completion_ids=completion_ids, completion_mask=completion_mask,
+            completion_ids=completion_ids, completion_mask=stop_mask,
             task_ids=rep.get("task_ids", None),
             temperature=cfg.temperature,
             micro_batch_size=micro_batch_logps,
@@ -214,7 +246,8 @@ def rollout_and_cache(
         chunk_embeds=chunk_embeds_rep, chunk_mask=chunk_mask_rep,
         image_embeds=image_embeds_rep, image_mask=image_mask_rep,
         completion_ids=completion_ids,
-        completion_mask=completion_mask,
+        stop_mask=stop_mask,
+        loss_mask=loss_mask,
         old_per_token_logps=old_logps,
         ref_per_token_logps=ref_logps,
         rewards=rewards,
