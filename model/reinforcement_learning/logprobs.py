@@ -111,6 +111,8 @@ def get_per_token_logps_smartcity(
     temperature: float = 1.0,
     micro_batch_size: Optional[int] = None,
 ) -> torch.Tensor:
+    if hasattr(model, "module"):
+        model = model.module
     decoder = model.decoder
     emb = decoder.get_input_embeddings()
     dev = emb.weight.device

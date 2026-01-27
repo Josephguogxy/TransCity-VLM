@@ -33,6 +33,13 @@ def _proxy_len_units(text: str) -> int:
 
 
 def extract_answer(text: str) -> str:
+    """
+    Qwen3-aligned:
+    - Take content AFTER the last </think> as answer.
+    - If no </think>, use whole text.
+    - Strip trailing control tokens like <|im_end|>, <|endoftext|>.
+    - Do NOT require <answer> tags.
+    """
     t = _strip_end_tokens(text)
 
     low = t.lower()
@@ -124,7 +131,6 @@ def compute_rewards(
     w_rL = 0.45
     w_cos = 0.50
 
-    # ---- length-control weights ----
     FREE_LEN = 650
     W_LEN = 0.08
     W_MISS_THINK_CLOSE = 0.03
@@ -132,7 +138,7 @@ def compute_rewards(
     metric_tokenize = "space"
     metric_batch_size = 16
     cos_model = "sentence-transformers/all-MiniLM-L6-v2"
-    metric_device = "cpu"
+    metric_device = "cpu" 
 
     n = len(completions)
     assert len(metas_rep) == n
@@ -177,7 +183,6 @@ def compute_rewards(
             r_rL[i]  = float(rL_sub[j])
             r_cos[i] = float(cos_sub[j])
 
-    # ---- length penalty ----
     len_pen = []
     for L in comp_lens:
         over = max(0.0, (float(L) - float(FREE_LEN)) / max(1.0, float(FREE_LEN)))
@@ -199,6 +204,7 @@ def compute_rewards(
             "cosine_mean": float(sum(r_cos[i] for i in idx) / max(1, len(idx))) if idx else 0.0,
             "pred_len_mean": float(sum(pred_lens) / max(1, n)),
             "think_close_rate": float(sum(has_think_close) / max(1, n)),
+
             "comp_len_mean": float(sum(comp_lens) / max(1, n)),
             "len_pen_mean": float(sum(len_pen) / max(1, n)),
             "miss_think_close_rate": float(sum(1.0 for x in has_think_close if not x) / max(1, n)),

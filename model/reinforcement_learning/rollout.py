@@ -6,7 +6,7 @@ import torch
 from accelerate import Accelerator
 
 from .config import GRPOConfig
-from .logprobs import make_stop_mask, get_per_token_logps_smartcity
+from .logprobs import make_stop_mask, get_per_token_logps_smartcity, trim_right_padded_3d
 from .rewards import ExampleMeta, compute_rewards
 
 
@@ -33,6 +33,8 @@ class RolloutBatch:
     rewards: torch.Tensor
     advantages: torch.Tensor
     metas_rep: List[ExampleMeta]
+    reward_info: Optional[Dict[str, float]] = None
+    texts: Optional[List[str]] = None
 
 
 def _repeat_interleave_any(x, repeats: int):
@@ -108,8 +110,11 @@ def rollout_and_cache(
     dtype = dec_emb.weight.dtype
     B = int(batch["prefix_ids"].size(0))
 
+    image_embeds = None
+    image_mask = None
+
     if hasattr(m, "encode_modalities"):
-        chunk_embeds, chunk_mask, image_embeds, image_mask, _ = m.encode_modalities(
+        out = m.encode_modalities(
             chunk_txts_all=batch.get("chunk_txts", None),
             pixel_values=batch.get("pixel_values", None),
             n_images=batch.get("n_images", None),
@@ -117,6 +122,11 @@ def rollout_and_cache(
             device=dev,
             dtype=dtype,
         )
+
+        if isinstance(out, (list, tuple)) and len(out) >= 4:
+            chunk_embeds, chunk_mask, image_embeds, image_mask = out[:4]
+        else:
+            chunk_embeds, chunk_mask = out[:2]
     else:
         chunk_embeds, chunk_mask, _ = m.encode_chunks(
             chunk_txts_all=batch.get("chunk_txts", None),
@@ -124,8 +134,13 @@ def rollout_and_cache(
             device=dev,
             dtype=dtype,
         )
+
+    if image_embeds is None or image_mask is None:
         image_embeds = chunk_embeds.new_zeros((B, 0, chunk_embeds.size(-1)))
         image_mask = torch.zeros((B, 0), device=dev, dtype=torch.long)
+
+    chunk_embeds, chunk_mask = trim_right_padded_3d(chunk_embeds, chunk_mask)
+    image_embeds, image_mask = trim_right_padded_3d(image_embeds, image_mask)
 
     # ---- 2) repeat prompts (B -> B*G) ----
     keys = ["prefix_ids", "prefix_mask", "suffix_ids", "suffix_mask", "task_ids"]
@@ -200,7 +215,7 @@ def rollout_and_cache(
         skip_special_tokens=False,
         clean_up_tokenization_spaces=False,
     )
-    reward_list = compute_rewards(texts, metas_rep)
+    reward_list, reward_info = compute_rewards(texts, metas_rep, return_info=True)
     rewards = torch.tensor(reward_list, device=dev, dtype=torch.float32)
 
     # ---- group advantage ----
@@ -253,4 +268,6 @@ def rollout_and_cache(
         rewards=rewards,
         advantages=advantages,
         metas_rep=metas_rep,
+        reward_info=reward_info,
+        texts=texts,
     )
