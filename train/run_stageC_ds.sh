@@ -1,47 +1,47 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
-# NOTE:
-# - This is a template script for open-source use.
-# - Replace model/data paths below (or set env vars) before running.
-
-export PYTHONPATH="$(pwd)"
+set -e
 
 ########################
-# Environment (important settings)
+# 环境（关键修改）
 ########################
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
-export NCCL_DEBUG="${NCCL_DEBUG:-info}"
-export NCCL_ASYNC_ERROR_HANDLING="${NCCL_ASYNC_ERROR_HANDLING:-1}"
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export NCCL_DEBUG=WARN
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 unset NCCL_BLOCKING_WAIT
-export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-1}"
-export NCCL_P2P_LEVEL="${NCCL_P2P_LEVEL:-NVL}"
-export MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
-export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
-export MASTER_PORT="${MASTER_PORT:-$((10000 + RANDOM % 20000))}"
+export NCCL_IB_DISABLE=1
+export NCCL_P2P_LEVEL=NVL
+export MASTER_ADDR=127.0.0.1
+export TOKENIZERS_PARALLELISM=false
+export MASTER_PORT=$((10000 + RANDOM % 20000))
 
 ########################
-# Paths
+# 路径
 ########################
-DECODER="${DECODER_NAME_OR_PATH:-/path/to/decoder-or-hf-id}"
-ENCODER="${ENCODER_NAME_OR_PATH:-/path/to/encoder-or-hf-id}"
-FULL_MODEL_LOAD_DIR="${FULL_MODEL_LOAD_DIR:-outputs/stageB}"
+DECODER="/apdcephfs_qy4/share_302593112/haorutan/smartCity/trafficPrediction/hf_models/Qwen3-8B"
+ENCODER="/apdcephfs_qy4/share_302593112/haorutan/smartCity/trafficPrediction/hf_models/Roberta-Large"
+FULL_MODEL_LOAD_DIR="/apdcephfs_qy4/share_302593112/haorutan/smartCity/trafficPrediction/checkpoint/stageB"
 
-# Training/validation jsonl files (space-separated)
-TRAIN_FILES="${TRAIN_FILES:-dataset_stageC/train_dataset_pred.jsonl dataset_stageC/train_dataset_reas.jsonl dataset_stageC/train_dataset_unsd.jsonl}"
-VAL_FILES="${VAL_FILES:-dataset_stageC/val_dataset.jsonl}"
+TRAIN_FILES="dataset_stageC/train_dataset_pred.jsonl dataset_stageC/train_dataset_reas.jsonl dataset_stageC/train_dataset_unsd.jsonl"
+VAL_FILES="dataset_stageC/val_dataset.jsonl"
 
-OUTPUT_DIR="${OUTPUT_DIR:-outputs/stageC}"
-DS_CFG="${DS_CFG:-ds_config_zero3.json}"
+OUTPUT_DIR="output_stageC"
+DS_CFG="ds_config_zero3.json"
 
-if [[ "${DECODER}" == "/path/to/decoder-or-hf-id" ]] || [[ "${ENCODER}" == "/path/to/encoder-or-hf-id" ]]; then
-  echo "ERROR: Please set DECODER_NAME_OR_PATH and ENCODER_NAME_OR_PATH (HF model id or local path)." >&2
-  exit 1
-fi
+########################
+# 超参（LoRA 用较高 LR）
+########################
+PER_DEVICE_BS=4
+GRAD_ACC=8
+LR=1e-4
+WEIGHT_DECAY=0.01
+EPOCHS=5
+MAXLEN=4096
+LOG_STEPS=10
+SAVE_STEPS=500
+EVAL_STEPS=500
 
-if [[ ! -d "${FULL_MODEL_LOAD_DIR}" ]]; then
-  echo "Warning: FULL_MODEL_LOAD_DIR '${FULL_MODEL_LOAD_DIR}' does not exist yet. Make sure Stage B outputs are there." >&2
-fi
+NUM_CHUNK_TOKENS=4
+NUM_IMAGE_TOKENS=32
 
 deepspeed --num_gpus 8 train_mm_stageC.py \
   --deepspeed ${DS_CFG} \

@@ -5,6 +5,7 @@
 from __future__ import annotations
 from typing import Optional, List, Dict, Any, Tuple
 import os, json, warnings, collections
+import time
 
 import torch
 import torch.nn as nn
@@ -14,10 +15,17 @@ from transformers import AutoModelForCausalLM, DynamicCache
 import torch.distributed as dist
 
 import inspect
-from transformers.modeling_utils import (
-    load_state_dict as hf_load_state_dict,
-    load_sharded_checkpoint as hf_load_sharded_checkpoint,
-)
+# Compatibility across transformers versions.
+# Some installed versions no longer expose load_sharded_checkpoint from modeling_utils.
+# These helpers are not used by SmartCityLLM.load_full_state_dict(), so keep them optional.
+try:
+    from transformers.modeling_utils import load_state_dict as hf_load_state_dict
+except Exception:
+    hf_load_state_dict = None
+try:
+    from transformers.modeling_utils import load_sharded_checkpoint as hf_load_sharded_checkpoint
+except Exception:
+    hf_load_sharded_checkpoint = None
 
 from ..multimodal_encoder.chunk_text_encoder import ChunkTextEncoder
 from ..multimodal_encoder.imagebind_encoder import ImageBindVisionEncoder
@@ -40,10 +48,9 @@ TASK_REASON     = 2
 class SmartCityLLMForCausalLM(nn.Module):
     """
     SmartCityLLM:
-
-      - chunk text -> vPMA (S=4 by default)
-      - images (SigLIP/CLIP) -> grouping projector (M=64 by default)
-      - optional MixLoRA injection (FFN only)
+      - chunk 文本 → vPMA（S=4 默认）
+      - 图像（SigLIP/CLIP）→ Grouping Projector（M=64 默认）
+      - 支持可选注入 MixLoRA（仅 FFN）
     """
     def __init__(
         self,
@@ -67,13 +74,13 @@ class SmartCityLLMForCausalLM(nn.Module):
         open_imagebind: bool = False,
         open_image_projector: bool = True,
         freeze_decoder: bool = True,
-        # === MixLoRA control ===
+        # === MixLoRA 控制 ===
         use_mixlora: bool = False,
         mixlora_cfg_overrides: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
 
-        # ---- LLM decoder ----
+        # ---- LLM 解码器 ----
         self.decoder = AutoModelForCausalLM.from_pretrained(
             decoder_name,
             torch_dtype=(torch.bfloat16 if torch.cuda.is_available()
@@ -98,11 +105,11 @@ class SmartCityLLMForCausalLM(nn.Module):
             raise RuntimeError("Decoder has no input embeddings")
         self.embed_dim = int(emb.embedding_dim)
 
-        # === Optional: inject MixLoRA (FFN only) ===
+        # === 可选：注入 MixLoRA（仅 FFN） ===
         self.use_mixlora: bool = False
         if use_mixlora:
             if not _HAS_MIXLORA:
-                raise ImportError("MixLoRA dependency not found; ensure ../decoder_mixlora.py and ../mixlora_masked.py are importable.")
+                raise ImportError("未找到 MixLoRA 依赖，请确认 ../decoder_mixlora.py 与 ../mixlora_masked.py 可导入。")
             dec_dtype = next(self.decoder.parameters()).dtype
 
             auto_model_type = str(getattr(getattr(self.decoder, "config", object()),
@@ -145,7 +152,7 @@ class SmartCityLLMForCausalLM(nn.Module):
             except Exception as e:
                 print("[warn] enable_input_require_grads failed in __init__:", e)
 
-        # ---- Text encoder + vPMA ----
+        # ---- 文本 Encoder + vPMA ----
         self.encoder = ChunkTextEncoder(
             model_name=encoder_name,
             max_length=encoder_max_length,
@@ -189,12 +196,12 @@ class SmartCityLLMForCausalLM(nn.Module):
             p.requires_grad_(bool(open_image_projector))
         self.num_image_tokens = int(num_image_tokens)
 
-        # Align dtype with decoder
+        # 与 decoder dtype 对齐
         dec_dtype = next(self.decoder.parameters()).dtype
         self.adapter.to(dtype=dec_dtype)
         self.image_projector.to(dtype=dec_dtype)
 
-        # Loss weights
+        # 损失权重
         self.alpha = float(alpha_understand)
         self.beta_pred = float(beta_prediction)
         self.beta_reason = float(beta_reason)
@@ -259,16 +266,16 @@ class SmartCityLLMForCausalLM(nn.Module):
         dtype: Optional[torch.dtype] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Returns:
+        返回：
           chunk_embeds, chunk_mask, image_embeds, image_mask, chunk_emb_all, img_proj_hook
-        img_proj_hook is a scalar (0.0 * sum) used with ZeRO-3 to ensure all ranks trigger the same parameter-gather/tracing path.
+        其中 img_proj_hook 是一个标量 (0.0*sum)，用于 ZeRO-3 保证各 rank 触发一致的参数抓取路径。
         """
         B = int(batch_size)
         dec_emb = self.decoder.get_input_embeddings()
         dev = device or dec_emb.weight.device
         dtype = dtype or dec_emb.weight.dtype
 
-        # Default hook
+        # 默认 hook
         img_proj_hook = torch.zeros((), device=dev, dtype=dtype)
 
         if SMARTCITY_TEXT_ONLY:
@@ -279,7 +286,7 @@ class SmartCityLLMForCausalLM(nn.Module):
             chunk_emb_all = torch.zeros(1, max(1, self.num_chunk_tokens), self.embed_dim, device=dev, dtype=dtype)
             return chunk_embeds, chunk_mask, image_embeds, image_mask, chunk_emb_all, img_proj_hook
 
-        # ===== 1) chunk text -> vPMA =====
+        # ===== 1) chunk 文本 → vPMA =====
         split_sizes, flat_txts = [], []
         if isinstance(chunk_txts_all, list):
             for lst in chunk_txts_all:
@@ -372,7 +379,7 @@ class SmartCityLLMForCausalLM(nn.Module):
         else:
             if has_local_imgs:
                 B_img, max_img, C, H, W = pixel_values.shape
-                assert B_img == B, "pixel_values batch dimension does not match batch_size"
+                assert B_img == B, "pixel_values 的 batch 维与 batch_size 不一致"
                 pv = pixel_values.to(dev).view(B * max_img, C, H, W)
 
                 train_vision = any(p.requires_grad for p in self.vision.parameters())
@@ -408,9 +415,9 @@ class SmartCityLLMForCausalLM(nn.Module):
                 image_embeds = img_tokens
                 image_mask = torch.stack(per_mask_img, dim=0)
 
-                # Optional: no hook needed here because projector params are already on the inputs_embeds path.
+                # 可选：这里不需要 hook，因为 projector 已经进 inputs_embeds 路径了
             else:
-                # No local images but some ranks have images: create a hook to avoid ZeRO-3 divergence.
+                # 本地没有图，但全局有人有图：必须做 hook，避免 ZeRO-3 分叉
                 H_img = getattr(self, "vision_resolution", 384)
                 W_img = H_img
                 dummy = torch.zeros(1, 3, H_img, W_img, device=dev, dtype=dtype)
@@ -430,7 +437,7 @@ class SmartCityLLMForCausalLM(nn.Module):
                 with ctx_p:
                     _dummy_proj = self.image_projector(_dummy_feats.to(dev, dtype=proj_dtype))
 
-                # Key: attach projector params to the graph (zero gradient, but ensures consistent gather/tracing).
+                # ✅ 关键：把 projector 的参数挂到图里（梯度为 0，但会触发一致的 gather/追踪）
                 img_proj_hook = _dummy_proj.sum().to(dtype) * 0.0
 
                 image_embeds = torch.zeros(B, 0, self.embed_dim, device=dev, dtype=dtype)
@@ -549,8 +556,16 @@ class SmartCityLLMForCausalLM(nn.Module):
         generated: List[torch.Tensor] = []
         finished = torch.zeros(B, dtype=torch.bool, device=device)
 
+        _gen_debug_every = int(os.environ.get("SMARTCITY_GENERATE_DEBUG_EVERY", "0") or "0")
+        _gen_debug_rank = int(os.environ.get("SMARTCITY_TIMING_RANK", "0") or "0")
         try:
-            for _ in range(max_new_tokens):
+            _gen_rank = int(dist.get_rank()) if dist.is_available() and dist.is_initialized() else 0
+        except Exception:
+            _gen_rank = 0
+        _gen_t0 = time.perf_counter()
+
+        try:
+            for _gen_step in range(max_new_tokens):
                 decoder_kwargs = dict(
                     inputs_embeds=inputs_embeds,
                     attention_mask=attn_mask,
@@ -563,30 +578,51 @@ class SmartCityLLMForCausalLM(nn.Module):
                     decoder_kwargs["task_ids"] = task_ids
 
                 outputs = decoder(**decoder_kwargs)
+                if _gen_step == 0 and _gen_debug_every > 0 and _gen_rank == _gen_debug_rank:
+                    _pkv = getattr(outputs, "past_key_values", None)
+                    try:
+                        _dec_gc = getattr(decoder, "is_gradient_checkpointing", None)
+                    except Exception:
+                        _dec_gc = None
+                    try:
+                        _cfg_cache = getattr(getattr(decoder, "config", None), "use_cache", None)
+                    except Exception:
+                        _cfg_cache = None
+                    print(
+                        f"[stageD-generate-cache][rank{_gen_rank}] "
+                        f"decoder_gc={_dec_gc} config_use_cache={_cfg_cache} "
+                        f"past_key_values_none={_pkv is None} "
+                        f"prompt_len={int(prompt_mask.size(1))} B={B} max_new={max_new_tokens}",
+                        flush=True,
+                    )
                 past_key_values = outputs.past_key_values
                 logits = outputs.logits[:, -1, :]
 
                 scores = logits if (temperature is None or temperature == 0.0) else (logits / float(temperature))
 
                 if do_sample:
-                    probs = torch.softmax(scores, dim=-1)
+                    # StageD speed fix:
+                    # top_k is the common path here. Do top-k on logits first,
+                    # then softmax only k entries instead of the full 151k vocab.
                     if top_k and top_k > 0:
-                        k = min(int(top_k), probs.size(-1))
-                        topk_probs, topk_idx = torch.topk(probs, k, dim=-1)
-                        topk_probs = topk_probs / topk_probs.sum(dim=-1, keepdim=True)
-                        sampled = torch.multinomial(topk_probs, num_samples=1)
+                        k = min(int(top_k), scores.size(-1))
+                        topk_scores, topk_idx = torch.topk(scores, k, dim=-1)
+                        topk_probs = torch.softmax(topk_scores, dim=-1)
+                        sampled = torch.multinomial(topk_probs.float(), num_samples=1)
                         next_token_ids = torch.gather(topk_idx, -1, sampled)
                     elif top_p and top_p < 1.0:
+                        probs = torch.softmax(scores, dim=-1)
                         sorted_probs, sorted_indices = torch.sort(probs, descending=True, dim=-1)
                         cumprobs = torch.cumsum(sorted_probs, dim=-1)
                         cutoff = cumprobs > top_p
                         cutoff[..., 0] = False
                         sorted_probs = sorted_probs.masked_fill(cutoff, 0.0)
                         sorted_probs = sorted_probs / sorted_probs.sum(dim=-1, keepdim=True)
-                        sampled = torch.multinomial(sorted_probs, num_samples=1)
+                        sampled = torch.multinomial(sorted_probs.float(), num_samples=1)
                         next_token_ids = torch.gather(sorted_indices, -1, sampled)
                     else:
-                        next_token_ids = torch.multinomial(probs, num_samples=1)
+                        probs = torch.softmax(scores, dim=-1)
+                        next_token_ids = torch.multinomial(probs.float(), num_samples=1)
                 else:
                     next_token_ids = torch.argmax(scores, dim=-1, keepdim=True)
 
@@ -605,6 +641,16 @@ class SmartCityLLMForCausalLM(nn.Module):
                         )
 
                 generated.append(next_token_ids)
+
+                if _gen_debug_every > 0 and _gen_rank == _gen_debug_rank:
+                    if ((_gen_step + 1) % _gen_debug_every == 0) or finished.all() or (_gen_step + 1 == max_new_tokens):
+                        print(
+                            f"[stageD-generate][rank{_gen_rank}] token_step={_gen_step + 1}/{max_new_tokens} "
+                            f"finished={int(finished.sum().item())}/{B} "
+                            f"elapsed={time.perf_counter() - _gen_t0:.2f}s",
+                            flush=True,
+                        )
+
                 if finished.all():
                     break
 
@@ -635,7 +681,7 @@ class SmartCityLLMForCausalLM(nn.Module):
         dec_emb = self.decoder.get_input_embeddings()
         dev, dtype = dec_emb.weight.device, dec_emb.weight.dtype
 
-        # ===== 1) multimodal encoding (chunk + image) =====
+        # ===== 1) 多模态编码（chunk + image） =====
         chunk_embeds, chunk_mask, image_embeds, image_mask, chunk_emb_all, img_proj_hook = self.encode_modalities(
             chunk_txts_all=chunk_txts_all,
             pixel_values=batch.get("pixel_values", None),
@@ -645,7 +691,7 @@ class SmartCityLLMForCausalLM(nn.Module):
             dtype=dtype,
         )
 
-        # ===== 2) assemble inputs to decoder =====
+        # ===== 2) 拼装到解码器 =====
         pre_emb = dec_emb(prefix_ids.to(dev))
         suf_emb = dec_emb(suffix_ids.to(dev))
 
@@ -697,7 +743,7 @@ class SmartCityLLMForCausalLM(nn.Module):
         shift_labels = full_labels[:, 1:].contiguous()
         active = shift_labels.ne(-100)
 
-        # Regardless of active labels, attach a dummy loss to keep logits connected to the graph.
+        # 无论有没有有效 label，都先挂一个 dummy loss，保证图连到 logits
         dummy_loss = logits.sum() * 0.0
 
         if active.any():
@@ -756,18 +802,63 @@ class SmartCityLLMForCausalLM(nn.Module):
             loss_reason_label = _masked_mean(loss_tok, m_reason_label)
             loss_reason_think = _masked_mean(loss_tok, m_reason_think)
 
+            # StageD repair: explicitly upweight the actual decoder label tokens
+            # for <think> and </think>. This is different from lambda_rat:
+            # lambda_rat weights the whole think segment, while this targets only
+            # the boundary special tokens that the model keeps failing to emit.
+            loss_reason_boundary = torch.tensor(0.0, device=loss_tok.device, dtype=loss_tok.dtype)
+            if os.environ.get("SMARTCITY_SFT_BOUNDARY_TOKEN_LOSS", "0").strip().lower() in {"1", "true", "yes", "on"}:
+                try:
+                    think_open_id = int(os.environ.get("SMARTCITY_SFT_THINK_OPEN_ID", "151667"))
+                    think_close_id = int(os.environ.get("SMARTCITY_SFT_THINK_CLOSE_ID", "151668"))
+                    open_w = float(os.environ.get("SMARTCITY_SFT_THINK_OPEN_WEIGHT", "16.0"))
+                    close_w = float(os.environ.get("SMARTCITY_SFT_THINK_CLOSE_WEIGHT", "6.0"))
+
+                    # shift_labels are the actual next-token labels.
+                    #
+                    # IMPORTANT:
+                    # The opening <think> token is at the beginning of the
+                    # assistant response and may NOT be inside m_reason_think.
+                    # Use m_reason_label so we can actually train the first
+                    # decoder label token. The previous m_reason_think mask
+                    # mainly boosted isolated </think> and caused close-only
+                    # outputs.
+                    boundary_label_mask = m_reason_label
+                    open_mask = active & boundary_label_mask & shift_labels.eq(think_open_id)
+                    close_mask = active & boundary_label_mask & shift_labels.eq(think_close_id)
+
+                    boundary_w = torch.zeros_like(loss_tok, dtype=loss_tok.dtype)
+                    if open_w > 0:
+                        boundary_w = boundary_w + open_mask.to(loss_tok.dtype) * open_w
+                    if close_w > 0:
+                        boundary_w = boundary_w + close_mask.to(loss_tok.dtype) * close_w
+
+                    denom = boundary_w.sum()
+                    if denom > 0:
+                        loss_reason_boundary = (loss_tok * boundary_w).sum() / denom.clamp_min(1.0)
+                except Exception:
+                    # Do not break training if env parsing fails.
+                    loss_reason_boundary = torch.tensor(0.0, device=loss_tok.device, dtype=loss_tok.dtype)
+
+            boundary_coef = float(os.environ.get("SMARTCITY_SFT_BOUNDARY_LOSS_COEF", "1.0"))
+
             real_loss = (
                 self.alpha * loss_understand
                 + self.beta_pred * loss_prediction
-                + self.beta_reason * (loss_reason_label + self.lambda_rat * loss_reason_think)
+                + self.beta_reason * (
+                    loss_reason_label
+                    + self.lambda_rat * loss_reason_think
+                    + boundary_coef * loss_reason_boundary
+                )
             )
             loss = real_loss + dummy_loss
         else:
             loss = dummy_loss
             z = torch.tensor(0.0, device=dev)
             loss_understand = loss_prediction = loss_reason_label = loss_reason_think = z
+            loss_reason_boundary = z
 
-        # ZeRO-3 consistency hook: chunk + projector (img_proj_hook is the scalar computed in encode_modalities)
+        # ✅ ZeRO-3 一致性 hook：chunk + projector（img_proj_hook 是 encode_modalities 里算好的标量）
         loss = loss + (chunk_emb_all.sum().to(loss.dtype) * 0.0) + img_proj_hook.to(loss.dtype)
 
         return {
@@ -777,6 +868,7 @@ class SmartCityLLMForCausalLM(nn.Module):
             "loss_prediction": loss_prediction.detach(),
             "loss_reason_label": loss_reason_label.detach(),
             "loss_reason_think": loss_reason_think.detach(),
+            "loss_reason_boundary": loss_reason_boundary.detach(),
         }
 
     def load_full_state_dict(self, load_dir: str, *, cast_to_target_dtype: bool = True, verbose: bool = True):

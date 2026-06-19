@@ -1,51 +1,106 @@
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
+# =========================
+# 1) Datasets (do NOT push)
+# =========================
+dataset_stageA/
+dataset_stageB/
+dataset_stageC/
+dataset_backup/
+dataset_grpo/
+dataset_stageD_grpo/
+dataset_stageD/
+dataset_comp_noimg/
 
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-*.egg-info/
-dist/
-build/
+# If you have other dataset folders:
+dataset_*/
 
-.venv/
-venv/
-env/
-pip-wheel-metadata/
+# Ignore dataset files specifically (extra safety)
+dataset_*/**/*.json
+dataset_*/**/*.jsonl
+dataset_*/**/*.parquet
+dataset_*/**/*.csv
+dataset_*/**/*.tsv
+dataset_*/**/*.npy
+dataset_*/**/*.npz
 
-.ipynb_checkpoints/
+# Globally ignore jsonl/txt files
+*.jsonl
+*.txt
 
-.env
-.env.*
-*.key
-*.pem
+# But keep important text docs if needed
+!requirements.txt
+!README.txt
 
-logs/
-*.log
-outputs/
-runs/
-wandb/
-mlruns/
-
-data/
-datasets/
-dataset/
+# =========================
+# 2) Checkpoints / model weights (do NOT push)
+# =========================
+checkpoint/
 checkpoints/
-weights/
-models/
+hf_models/
+model_backup/
+
 *.pt
 *.pth
 *.bin
-*.safetensors
 *.ckpt
+*.safetensors
 *.onnx
+*.pkl
+*.joblib
 
-cache/
-.hf_cache/
-huggingface/
+# =========================
+# 3) Outputs / logs / tracking (do NOT push)
+# =========================
+output_stageA/
+output_stageB/
+output_stageC/
+output_stageB_backup/
+output_stageC_backup/
+outputs_grpo/
+output_stageC_warmup/
+outputs/
+compare_results_nc_baseline/
+output_stageD/
+hf_upload_logs/
+inference_dir/
+stageC_final/
+wandb/
+runs/
+logs/
+compare_results/
+compare_results_noimg/
+compare_results_noimg_probe/
+compare_results_probe/
+
+*.log
+nohup.out
+*.out
+
+# =========================
+# 4) Python / OS junk
+# =========================
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
+
+# Excel temporary lock files
+~$*
+*.tmp
+
+# =========================
+# 5) Secrets (avoid accidents)
+# =========================
+.env
+*.pem
+*.key
+
+.ssh_github/
+output_stageD/
+
+# local backup files
+*.bak
+*.bak_*
+*.bak*
+*.backup
+*.orig

@@ -1,5 +1,17 @@
-# Copyright (c) 2024 torchtorch Authors.
-# Licensed under the Apache License, Version 2.0
+# Copyright (c) 2024 torchtorch Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from __future__ import annotations
 import math
 import torch
@@ -38,7 +50,7 @@ class MABPostLN(nn.Module):
 
 class AdapterVPMA(nn.Module):
     """
-    vPMA: S learnable seeds compress token-level text representations into S 'soft tokens', then map them to the LLM embedding dimension.
+    vPMA：S个可学习种子，把 token-level 文本表示压成 S 个“软 token”，并映射到 LLM 嵌入维。
     """
     def __init__(self, d_enc: int, d_dec: int, num_seeds: int = 4, num_heads: int = 4, ln: bool = True):
         super().__init__()
@@ -50,7 +62,7 @@ class AdapterVPMA(nn.Module):
 
     def forward(self, token_states: torch.Tensor, token_mask: torch.Tensor) -> torch.Tensor:
         B = token_states.size(0)
-        # Important: align token_states dtype to this module parameter dtype (often float32).
+        # 关键：把输入 token_states 的 dtype 对齐到本模块参数的 dtype（通常是 float32）
         param_dtype = self.seeds.dtype
         if token_states.dtype != param_dtype:
             token_states = token_states.to(param_dtype)

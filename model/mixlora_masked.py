@@ -1,5 +1,16 @@
-# Copyright (c) 2024 torchtorch Authors.
-# Licensed under the Apache License, Version 2.0
+# Copyright (c) 2024 torchtorch Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
@@ -13,10 +24,11 @@ import torch.nn.functional as F
 
 
 # =========================
-# Configuration
+# 配置
 # =========================
 @dataclass
 class MixLoRAConfig:
+    # 专家/LoRA
     num_experts: int = 20
     lora_r: int = 8
     lora_alpha: float = 16.0
@@ -38,8 +50,10 @@ class MixLoRAConfig:
     ensure_nonzero_gating: bool = False
     nonzero_epsilon: float = 0.0
 
+    # ★ 新增：任务数（默认 2 保持旧行为；本方案设为 3）
     num_tasks: int = 3
 
+    # === 新增：用“数量”配置 U/P/R ===
     num_universal: Optional[int] = None
     num_pred: Optional[int] = None
     num_reason: Optional[int] = None
@@ -66,7 +80,7 @@ TARGET_MODULE_TYPE: Dict[str, Dict[str, List[str] or str]] = {
         "wi": ["mlp.gate_proj", "mlp.up_proj"],
         "wo": ["mlp.down_proj"],
     },
-    "qwen2": {
+    "qwen2": {    # 同 llama
         "atte": "self_attn",
         "ffn": "mlp",
         "q": ["self_attn.q_proj"],
@@ -86,7 +100,7 @@ TARGET_MODULE_TYPE: Dict[str, Dict[str, List[str] or str]] = {
 
 
 # =========================
-# Utilities
+# 工具函数
 # =========================
 def _get_module(root: nn.Module, dotted: str) -> Optional[nn.Module]:
     mod = root
@@ -106,6 +120,7 @@ def _set_module(root: nn.Module, dotted: str, new_mod: nn.Module):
 
 
 def _extract_layer_id(name: str) -> Optional[int]:
+    # 取模块名末尾的 .<number>
     m = re.search(r"\.(\d+)$", name)
     return int(m.group(1)) if m else None
 
@@ -119,7 +134,7 @@ def _resolve_mapping(cfg: MixLoRAConfig, model: nn.Module) -> Dict[str, List[str
 
 def _linear_like_dims(mod: nn.Module) -> Tuple[int, int]:
     """
-    Return (in_features, out_features). Compatible with nn.Linear / bitsandbytes Linear4bit/Linear8bitLt / other modules with a weight.
+    返回 (in_features, out_features)；兼容 nn.Linear / bnb Linear4bit/Linear8bitLt / 其它含 weight 的模块。
     """
     if hasattr(mod, "in_features") and hasattr(mod, "out_features"):
         return int(mod.in_features), int(mod.out_features)
@@ -127,24 +142,17 @@ def _linear_like_dims(mod: nn.Module) -> Tuple[int, int]:
         wshape = tuple(mod.weight.shape)  # [out, in]
         if len(wshape) == 2:
             return int(wshape[1]), int(wshape[0])
-    raise ValueError(f"Unable to infer linear layer dimensions: {type(mod)}")
+    raise ValueError(f"无法解析线性层维度：{type(mod)}")
 
 
 # =========================
-# Router: task hard mask + token-level softmax (optional epsilon-gating)
+# 路由器：任务硬掩码 + token 级 softmax（可选 ε-gating）
 # =========================
 class MaskedTokenRouter(nn.Module):
     """
-    Token-level router + task-level hard mask.
-
-    Task IDs (cfg.num_tasks):
-      - 3-task mode: 0 = understand, 1 = prediction, 2 = reason
-      - 2-task legacy mode: 0 = prediction, 1 = reason
-
-    Masking (U/P/R are expert groups):
-      - understand -> U only
-      - prediction -> U ∪ P
-      - reason -> U ∪ R
+    Token-level router + Task-level hard mask.
+    - 两类任务：0 = P（prediction），1 = R（reason）
+    - 掩码：P -> U ∪ P；R -> U ∪ R
     """
     def __init__(self, input_dim: int, num_experts: int, cfg: MixLoRAConfig):
         super().__init__()
@@ -162,28 +170,28 @@ class MaskedTokenRouter(nn.Module):
             layers += [nn.Dropout(cfg.dropout), nn.Linear(hd, num_experts, dtype=cfg.torch_dtype)]
         self.mlp = nn.Sequential(*layers)
 
-        # [T, E] mask table (tasks x experts)
+        # [2, E] 掩码表（P, R）
         self.register_buffer("mask_table", self._build_mask_table(cfg), persistent=False)
 
-        # Getter injected externally (set by wrapper)
+        # 外部注入的 getter（Wrapper 设置）
         self._get_task_ids: Optional[Callable[[], Optional[torch.Tensor]]] = None
 
-        # Cache for shared router (Q/K/V or WI groups)
+        # 共享路由器（Q/K/V 或 WI 共享）缓存
         self._cached_routing_weight: Optional[torch.Tensor] = None
 
     @staticmethod
     def _indices_from_cfg(cfg: MixLoRAConfig) -> Tuple[List[int], List[int], List[int]]:
         E = int(cfg.num_experts)
 
-        # Preferred: auto-split by counts (recommended)
+        # 优先：按“数量”自动切分（推荐）
         if cfg.num_universal is not None:
             u = int(cfg.num_universal)
             if cfg.num_pred is not None and cfg.num_reason is not None:
                 p = int(cfg.num_pred); r = int(cfg.num_reason)
-                assert u + p + r == E, f"Sum of U/P/R counts ({u}+{p}+{r}) must equal num_experts={E}"
+                assert u + p + r == E, f"U/P/R 数量之和({u}+{p}+{r})必须等于 num_experts={E}"
             else:
                 remaining = E - u
-                assert remaining >= 0 and remaining % 2 == 0, "When only U count is set, remaining experts must be divisible between P and R."
+                assert remaining >= 0 and remaining % 2 == 0, "只指定 U 数量时，剩余专家数必须能均分给 P/R。"
                 p = remaining // 2; r = remaining - p
             if cfg.universal_at == "front":
                 U = list(range(0, u))
@@ -195,7 +203,7 @@ class MaskedTokenRouter(nn.Module):
                 U = list(range(r + p, r + p + u))
             return U, P, R
 
-        # Backward-compatible: explicit indices
+        # 兼容：显式 indices
         if cfg.universal_indices is not None or cfg.pred_indices is not None or cfg.reason_indices is not None:
             U = list(cfg.universal_indices) if cfg.universal_indices is not None else \
                 ([0, 1] if cfg.universal_at == "front" else [E - 2, E - 1])
@@ -210,10 +218,10 @@ class MaskedTokenRouter(nn.Module):
                 R = [i for i in rest if i not in P]
             return U, P, R
 
-        # Legacy default: 2 U experts; split the rest evenly into P/R
+        # 旧默认：2 个 U，其余均分 P/R
         U = [0, 1] if cfg.universal_at == "front" else [E - 2, E - 1]
         remaining = [i for i in range(E) if i not in U]
-        assert len(remaining) % 2 == 0, "Remaining experts must be evenly split between P and R."
+        assert len(remaining) % 2 == 0, "剩余专家数必须能平均分给 P/R。"
         half = len(remaining) // 2
         P = remaining[:half]
         R = remaining[half:]
@@ -257,7 +265,7 @@ class MaskedTokenRouter(nn.Module):
         probs = torch.softmax(logits, dim=-1)
 
         if ensure_nonzero:
-            dtype_tiny = torch.finfo(probs.dtype).tiny  # Smallest positive for dtype; fp16 ~6e-5
+            dtype_tiny = torch.finfo(probs.dtype).tiny  # dtype 最小正数；fp16≈6e-5
             eps_val = float(dtype_tiny if (eps is None or eps <= 0.0) else eps)
             eps_t = torch.as_tensor(eps_val, dtype=probs.dtype, device=probs.device)
             add = (~mask).to(probs.dtype) * eps_t
@@ -269,15 +277,15 @@ class MaskedTokenRouter(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """
-        hidden_states: [B, T, D]; returns routing_weight: [B, T, E]
+        hidden_states: [B, T, D]；返回 routing_weight: [B, T, E]
         """
         device = hidden_states.device
         routing_logits = self.mlp(hidden_states)  # [B, T, E]
         if self._get_task_ids is None:
-            raise RuntimeError("MaskedTokenRouter has no task_ids getter; wrap the model with MixLoRAWrapper.")
+            raise RuntimeError("MaskedTokenRouter 未注入 task_ids getter；请用 MixLoRAWrapper 包装模型。")
         task_ids = self._get_task_ids()
         if task_ids is None:
-            raise RuntimeError("task_ids not set for this batch; pass task_ids to forward()/generate().")
+            raise RuntimeError("本 batch 未设置 task_ids；forward/generate 需传入 task_ids。")
 
         if task_ids.device != device:
             task_ids = task_ids.to(device)
@@ -309,17 +317,13 @@ class MaskedTokenRouter(nn.Module):
 
 
 # =========================
-# MixLoRA expert aggregation (minimal support for variable rank)
+# MixLoRA 专家聚合（支持“可变 rank”的最小改动）
 # =========================
 class MixLoRAExperts(nn.Module):
     """
-    Supports both fixed-rank (legacy) and per-expert variable rank (enabled when r_per_expert is provided).
-
-    - Fixed rank:
-        A: [E*r, in], B: [out, E*r]
-    - Variable rank:
-        A: [sum(r_i), in], B: [out, sum(r_i)]
-        with per-expert scaling alpha/sqrt(r_i).
+    支持“统一 rank”（旧路径）与“按专家可变 rank”（新路径，传 r_per_expert 时启用）。
+    统一 rank：A: [E*r, in], B: [out, E*r]；
+    可变 rank：A: [sum(r_i), in], B: [out, sum(r_i)]，并对每个专家使用 alpha/sqrt(r_i) 的缩放。
     """
     def __init__(self, in_features: int, out_features: int, cfg: MixLoRAConfig,
                  r_per_expert: Optional[List[int]] = None):
@@ -330,17 +334,17 @@ class MixLoRAExperts(nn.Module):
         self.dropout = nn.Dropout(cfg.dropout)
 
         if r_per_expert is None:
-            # === Legacy path: fixed rank ===
+            # === 旧路径：统一 rank ===
             self.rank = int(cfg.lora_r)
             self._variable_r = False
             self.A = nn.Parameter(torch.empty((self.rank * self.num_experts, self.in_features), dtype=cfg.torch_dtype))
             self.B = nn.Parameter(torch.empty((self.out_features, self.rank * self.num_experts), dtype=cfg.torch_dtype))
             self.scaling = cfg.lora_alpha / math.sqrt(max(1.0, float(self.rank)))
         else:
-            # === New path: variable rank ===
+            # === 新路径：可变 rank ===
             self._variable_r = True
             self.r_per = [int(max(1, int(r))) for r in r_per_expert]
-            assert len(self.r_per) == self.num_experts, "r_per_expert length must equal num_experts"
+            assert len(self.r_per) == self.num_experts, "r_per_expert 长度应等于 num_experts"
             self.Rsum = int(sum(self.r_per))
             self._offsets = [0]
             for r in self.r_per:
@@ -358,14 +362,14 @@ class MixLoRAExperts(nn.Module):
     def forward(self, x: torch.Tensor, gate: torch.Tensor, residual: torch.Tensor) -> torch.Tensor:
         x = self.dropout(x)
         if not getattr(self, "_variable_r", False):
-            # Legacy path
+            # 旧路径
             xr = F.linear(x, self.A)  # [B,T,E*r]
             xr = xr.view(x.shape[:-1] + (self.num_experts, self.rank))                               # [B,T,E,r]
             xr = (xr * gate.unsqueeze(-1)).reshape(x.shape[:-1] + (self.num_experts * self.rank,))  # [B,T,E*r]
             delta = F.linear(xr, self.B) * self.scaling                                             # [B,T,out]
             return (residual + delta).to(residual.dtype)
         else:
-            # Variable rank
+            # 可变 rank
             xr = F.linear(x, self.A)  # [B,T,Rsum]
             parts = []
             scales = self.scaling_per.to(xr.dtype)
@@ -380,23 +384,21 @@ class MixLoRAExperts(nn.Module):
 
 
 # =========================
-# Linear wrapper
+# 线性层包装器
 # =========================
 class MixLoRALinear(nn.Module):
     """
-    Note: this module only holds a weak reference (weakref) to the Router and does not register it as a submodule.
-
-    This ensures state_dict/safetensors store the Router only once (registered at the layer root),
-    avoiding shared-weight serialization issues.
+    注意：此模块仅持有对 Router 的弱引用（weakref），不把 Router 注册为子模块。
+    这样 state_dict/safetensors 只保存一份 Router（注册在 layer 根），避免共享权重报错。
     """
     def __init__(self, base_linear: nn.Module, router: MaskedTokenRouter, use_cache: bool, cfg: MixLoRAConfig):
         super().__init__()
-        self.base = base_linear  # Base linear layer (may be 4/8-bit)
+        self.base = base_linear  # 原底座线性层（可能是 4/8bit）
         in_f, out_f = _linear_like_dims(base_linear)
-        self._router_ref = weakref.ref(router)  # Weak reference
+        self._router_ref = weakref.ref(router)  # ★ 弱引用
         self.use_cache = use_cache
 
-        # Auto-set variable ranks from U/P/R: U rank = rank_universal_mul * lora_r; P/R rank = lora_r
+        # === 依据 U/P/R 自动设置“可变 rank”：U 的 r = rank_universal_mul × lora_r，P/R = lora_r ===
         try:
             U, P, R = MaskedTokenRouter._indices_from_cfg(cfg)
         except Exception:
@@ -414,23 +416,23 @@ class MixLoRALinear(nn.Module):
         base_out = self.base(hidden_states)
         router = self._router_ref()
         if router is None:
-            raise RuntimeError("Router has been freed or was not registered.")
+            raise RuntimeError("Router 已被释放或未注册。")
         if not self.use_cache:
-            gate = router(hidden_states)  # First module in the group: compute and cache
+            gate = router(hidden_states)  # 首个子模块：计算并缓存
         else:
             gate = router.get_cached_routing_weight()
-            if gate is None:  # Fallback
+            if gate is None:  # 兜底
                 gate = router(hidden_states)
         return self.mixlora(hidden_states, gate, base_out)
 
 
 # =========================
-# Injection: monkey-patch and replace linear submodules (register one Router per layer)
+# 注入：猴子补丁式替换线性子模块（每层只注册一次 Router）
 # =========================
 def apply_mixlora(model: nn.Module, cfg: MixLoRAConfig) -> nn.Module:
     mapping = _resolve_mapping(cfg, model)
 
-    # Collect each layer (module names end with .<id>)
+    # 收集每一层（模块名以 .<id> 结尾）
     layers_by_id: Dict[int, nn.Module] = {}
     for name, module in model.named_modules():
         lid = _extract_layer_id(name)
@@ -438,13 +440,13 @@ def apply_mixlora(model: nn.Module, cfg: MixLoRAConfig) -> nn.Module:
             layers_by_id[lid] = module
 
     if not layers_by_id:
-        raise RuntimeError("Failed to auto-detect layers (module names do not end with .<layer_id>). Use cfg.target_modules_override to specify mappings.")
+        raise RuntimeError("未能自动识别层（模块名未以 .<layer_id> 结尾）。请用 cfg.target_modules_override 指定映射。")
 
     routers: List[MaskedTokenRouter] = []
 
     def _register_router(layer_root: nn.Module, router: MaskedTokenRouter, counter: int) -> str:
         name = f"_mixlora_shared_router_{counter}"
-        setattr(layer_root, name, router)  # Register as a submodule (only once)
+        setattr(layer_root, name, router)  # 正式注册为子模块（仅 1 次）
         return name
 
     def _inject_group(layer_root: nn.Module, names: List[str], share_router: bool, router_counter: List[int]):
@@ -467,9 +469,9 @@ def apply_mixlora(model: nn.Module, cfg: MixLoRAConfig) -> nn.Module:
                 use_cache = False
             wrapped = MixLoRALinear(target, router, use_cache=use_cache, cfg=cfg)
             _set_module(layer_root, nm, wrapped)
-            use_cache = share_router  # Subsequent modules in the group reuse cached routing weights
+            use_cache = share_router  # 组内后续模块用缓存
 
-    # Inject per layer
+    # 对每层注入
     for lid in sorted(layers_by_id.keys()):
         layer_root = layers_by_id[lid]
         counter = [0]
@@ -502,24 +504,20 @@ def apply_mixlora(model: nn.Module, cfg: MixLoRAConfig) -> nn.Module:
 
 
 # =========================
-# Runtime wrapper: inject task_ids per batch, clear cache, and support generate()
+# 运行包装器：批内注入 task_ids + 清理缓存 + 兼容 generate
 # =========================
 class MixLoRAWrapper(nn.Module):
     """
-    Usage:
+    用法：
         base = apply_mixlora(model, cfg)
         wrapped = MixLoRAWrapper(base)
-
-        # task_ids semantics depend on cfg.num_tasks:
-        #   - 3-task mode: 0=understand, 1=prediction, 2=reason
-        #   - 2-task mode: 0=prediction, 1=reason
-        outputs = wrapped(..., task_ids=torch.LongTensor[B])
-        wrapped.generate(..., task_ids=torch.LongTensor[B])
+        outputs = wrapped(..., task_ids=LongTensor[B])   # 0=P，1=R
+        wrapped.generate(..., task_ids=LongTensor[B])
     """
     def __init__(self, model: nn.Module):
         super().__init__()
         if not hasattr(model, "_mixlora_router_list"):
-            raise RuntimeError("Please call apply_mixlora(model, cfg) before using MixLoRAWrapper.")
+            raise RuntimeError("请先调用 apply_mixlora(model, cfg) 注入 MixLoRA。")
         self._wrapped = model
         for r in self._wrapped._mixlora_router_list:   # type: ignore[attr-defined]
             r.set_task_getter(lambda m=self: getattr(m._wrapped, "_task_ids"))
@@ -573,7 +571,7 @@ class MixLoRAWrapper(nn.Module):
     def generate(self, *args, task_ids: Optional[torch.Tensor] = None, **kwargs):
         if task_ids is not None:
             prefer = None
-            if len(args) >= 1 and torch.is_tensor(args[0]):  # input_ids may be passed as the first positional arg
+            if len(args) >= 1 and torch.is_tensor(args[0]):  # 可能传入 input_ids
                 prefer = args[0].device
             if "inputs_embeds" in kwargs and torch.is_tensor(kwargs["inputs_embeds"]):
                 prefer = kwargs["inputs_embeds"].device

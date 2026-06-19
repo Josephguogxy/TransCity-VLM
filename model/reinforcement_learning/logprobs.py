@@ -11,6 +11,14 @@ def selective_log_softmax(logits: torch.Tensor, index: torch.Tensor) -> torch.Te
     index:  [B, T]
     return: logp for selected tokens, [B, T]
     """
+    # Safety for tensors created in inference/no_grad generation paths.
+    # CrossEntropy may save target tensors for backward; inference tensors cannot be saved.
+    try:
+        if hasattr(index, "is_inference") and index.is_inference():
+            index = index.clone()
+    except Exception:
+        index = index.clone()
+
     B, T, V = logits.shape
     logp = -F.cross_entropy(
         logits.reshape(-1, V),

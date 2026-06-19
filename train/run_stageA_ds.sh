@@ -1,49 +1,36 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -e
 
-# NOTE:
-# - This is a template script for open-source use.
-# - Replace model/data paths below (or set env vars) before running.
+# ====== 环境 ======
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export NCCL_DEBUG=info
+export TORCH_NCCL_BLOCKING_WAIT=1
+export TOKENIZERS_PARALLELISM=false
+export TORCH_COMPILE=0
+export DS_BUILD_OPS=0
 
-export PYTHONPATH="$(pwd)"
+export NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_BLOCKING_WAIT=1
+export TORCH_NCCL_BLOCKING_WAIT=1
+export MASTER_PORT=$((10000 + RANDOM % 20000))
+export NCCL_TIMEOUT=600
 
-# ====== Environment ======
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
-export NCCL_DEBUG="${NCCL_DEBUG:-info}"
-export TORCH_NCCL_BLOCKING_WAIT="${TORCH_NCCL_BLOCKING_WAIT:-1}"
-export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
-export TORCH_COMPILE="${TORCH_COMPILE:-0}"
-export DS_BUILD_OPS="${DS_BUILD_OPS:-0}"
 
-export NCCL_ASYNC_ERROR_HANDLING="${NCCL_ASYNC_ERROR_HANDLING:-1}"
-export NCCL_BLOCKING_WAIT="${NCCL_BLOCKING_WAIT:-1}"
-export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-1}"
-export MASTER_PORT="${MASTER_PORT:-$((10000 + RANDOM % 20000))}"
-export NCCL_TIMEOUT="${NCCL_TIMEOUT:-600}"
+# ====== 路径 ======
+DECODER="/apdcephfs_qy4/share_302593112/haorutan/smartCity/trafficPrediction/hf_models/Qwen3-8B"
+ENCODER="/apdcephfs_qy4/share_302593112/haorutan/smartCity/trafficPrediction/hf_models/Roberta-Large"
 
-# ====== Paths ======
-# You can set these via env vars:
-#   DECODER_NAME_OR_PATH / ENCODER_NAME_OR_PATH
-#   TRAIN_FILES / VAL_FILES / OUTPUT_DIR / DS_CFG
-DECODER="${DECODER_NAME_OR_PATH:-/path/to/decoder-or-hf-id}"
-ENCODER="${ENCODER_NAME_OR_PATH:-/path/to/encoder-or-hf-id}"
+# 合并后的本地 JSONL（推荐先用 merge 脚本产出）
+TRAIN_FILES="dataset_stageA/train_understand_dataset.jsonl"
+VAL_FILES="dataset_stageA/test_understand_dataset.jsonl"
 
-# Local JSONL files (generate these first if needed)
-TRAIN_FILES="${TRAIN_FILES:-dataset_stageA/train_understand_dataset.jsonl}"
-VAL_FILES="${VAL_FILES:-dataset_stageA/test_understand_dataset.jsonl}"
+OUTPUT_DIR="output_stageA"
+DS_CFG="ds_config_zero3.json"
 
-OUTPUT_DIR="${OUTPUT_DIR:-outputs/stageA}"
-DS_CFG="${DS_CFG:-ds_config_zero3.json}"
-
-if [[ "${DECODER}" == "/path/to/decoder-or-hf-id" ]] || [[ "${ENCODER}" == "/path/to/encoder-or-hf-id" ]]; then
-  echo "ERROR: Please set DECODER_NAME_OR_PATH and ENCODER_NAME_OR_PATH (HF model id or local path)." >&2
-  exit 1
-fi
-
-# ====== Training hyperparameters ======
-PER_DEVICE_BS=8          # micro-batch per GPU
-GRAD_ACC=8               # gradient accumulation steps
-LR=3e-5                  # Stage A: train RoBERTa + projector only
+# ====== 训练超参 ======
+PER_DEVICE_BS=8          # 每卡 micro-batch
+GRAD_ACC=8               # 累计步数
+LR=3e-5                  # Stage-A：只训 RoBERTa + Projector，学习率可略大
 WEIGHT_DECAY=0.1
 EPOCHS=5
 MAXLEN=1024
@@ -51,11 +38,11 @@ LOG_STEPS=5
 SAVE_STEPS=500
 EVAL_STEPS=500
 
-# ====== Concept tokens (must match model & collator) ======
+# ====== 概念 token 个数（与模型&collator 保持一致） ======
 NUM_CHUNK_TOKENS=4
 NUM_IMAGE_TOKENS=32
 
-# ====== Launch (DeepSpeed + ZeRO-3) ======
+# ====== 启动（deepspeed 双卡 + ZeRO-3）======
 deepspeed --num_gpus 8 train_mm_stageA.py \
   --deepspeed ${DS_CFG} \
   --output_dir ${OUTPUT_DIR} \
@@ -84,6 +71,7 @@ deepspeed --num_gpus 8 train_mm_stageA.py \
   --adapter_heads 4 \
   --encoder_max_length 512 \
   --imagebind_variant "google/siglip-so400m-patch14-384" \
+  --max_images_per_sample 4 \
   --group_layers 2 \
   --group_heads 8 \
   --group_tau 1.0 \
@@ -106,6 +94,6 @@ deepspeed --num_gpus 8 train_mm_stageA.py \
   $(for f in ${TRAIN_FILES}; do echo --train_files ${f}; done) \
   $(for f in ${VAL_FILES}; do echo --validation_files ${f}; done)
 
-# After training, train_mm_stageA.py will:
-# 1) Save full HF weights to ${OUTPUT_DIR}
-# 2) If save_multimodal_checkpoint() is implemented, also export mm_checkpoint/ (RoBERTa + vPMA + ImageProjector only)
+# 训练完成后，train_mm_stageA.py 会：
+# 1) 保存 HF 全量权重到 ${OUTPUT_DIR}
+# 2) 若实现了 save_multimodal_checkpoint()，同时导出 mm_checkpoint/ （仅 RoBERTa + vPMA + ImageProjector）

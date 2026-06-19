@@ -1,6 +1,4 @@
-# Copyright (c) 2024 torchtorch Authors
-# Licensed under the Apache License, Version 2.0
-
+# model/multimodal_encoder/imagebind_encoder.py
 from __future__ import annotations
 from typing import List, Optional, Literal, Dict, Any
 import warnings
@@ -9,7 +7,7 @@ import torch.nn as nn
 from transformers import AutoModel, CLIPVisionModel
 
 # -----------------------------
-# Optional: ImageBind backend (kept for backward compatibility)
+# Optional: ImageBind backend (保留兼容性)
 # -----------------------------
 _HAS_IMAGEBIND = False
 try:
@@ -21,12 +19,11 @@ except Exception:
 
 class ImageBindVisionEncoder(nn.Module):
     """
-    Multimodal vision encoder wrapper.
-
-    Supported backends:
-      1. SigLIP (Google): recommended default. Output ~[B, 729, 1152] for 384px inputs.
-      2. CLIP (OpenAI): classic baseline. Output ~[B, 576, 1024] for 336px inputs (CLS removed).
-      3. ImageBind (Meta): legacy option for cross-modal alignment. Output [B, 1, 1024] (global feature).
+    2025H2 多模态视觉编码器
+    支持后端：
+      1. SigLIP (Google): SOTA 推荐。输出 [B, 729, 1152] (384px)
+      2. CLIP (OpenAI): 经典基准。输出 [B, 576, 1024] (336px)
+      3. ImageBind (Meta): 仅用于全模态对齐。输出 [B, 1, 1024]
     """
 
     def __init__(
@@ -40,7 +37,7 @@ class ImageBindVisionEncoder(nn.Module):
         self.variant = str(variant)
         self.output_tokens = output_tokens
         
-        # === Auto-detect backend ===
+        # === 自动判定后端 ===
         v_lower = self.variant.lower()
         if "siglip" in v_lower:
             self.backend = "siglip"
@@ -49,25 +46,25 @@ class ImageBindVisionEncoder(nn.Module):
         elif "imagebind" in v_lower or "huge" in v_lower:
             self.backend = "imagebind"
         else:
-            # Default fallback to SigLIP (or CLIP)
+            # 默认 fallback 到 SigLIP (2025趋势) 或 CLIP
             self.backend = "siglip"
 
         print(f"[VisionEncoder] Backend: {self.backend} | Variant: {self.variant}")
 
         # === 1. SigLIP Backend (SOTA) ===
         if self.backend == "siglip":
-            # Load SigLIP vision model
-            # Note: AutoModel may load a full SiglipModel; we may need to extract vision_model.
-            # Alternatively, some repos expose a standalone vision tower; handle both cases.
+            # 加载 SigLIP Vision Model
+            # 注意：AutoModel 会加载整个 SiglipModel，我们需要提取其中的 vision_model
+            # 或者直接用 AutoModel 加载 vision tower 路径（如果是单独的repo），通常用 transformers 库加载整体
             try:
-                # Try loading the vision part directly (if the repo supports it).
+                # 尝试直接加载 Vision 部分 (如果 repo 支持)
                 self.model = AutoModel.from_pretrained(self.variant)
             except Exception:
-                # Some repos ship a full model; fall back to extracting vision_model.
+                # 某些 repo 可能是全量模型，尝试加载后取 vision_model
                 full_model = AutoModel.from_pretrained(self.variant)
                 self.model = getattr(full_model, "vision_model", full_model)
             
-            # Infer hidden_size (often 1152).
+            # 自动获取 hidden_size (通常 1152)
             self.hidden_size = getattr(self.model.config, "hidden_size", 1152)
             if hasattr(self.model.config, "vision_config"):
                  self.hidden_size = self.model.config.vision_config.hidden_size
@@ -87,7 +84,7 @@ class ImageBindVisionEncoder(nn.Module):
                 self.model = _ibm.imagebind_base(pretrained=True)
             self.hidden_size = 1024
 
-        # Freeze/unfreeze parameters
+        # 冻结/解冻逻辑
         for p in self.model.parameters():
             p.requires_grad_(bool(trainable))
         if not trainable:
@@ -105,8 +102,8 @@ class ImageBindVisionEncoder(nn.Module):
         # === SigLIP Logic ===
         if self.backend == "siglip":
             # SigLIP forward: returns BaseModelOutputWithPooling
-            # outputs.last_hidden_state provides patch features.
-            # Shape: [B, 729, 1152] for 384px inputs.
+            # vision_model(x) 的 output.last_hidden_state 即为 patch features
+            # 形状: [B, 729, 1152] (对于 384px)
             outputs = self.model.vision_model(pixel_values=x)
             features = outputs.last_hidden_state 
             return features
@@ -116,14 +113,14 @@ class ImageBindVisionEncoder(nn.Module):
             outputs = self.model(pixel_values=x)
             # [B, 1+576, 1024]
             features = outputs.last_hidden_state
-            # Drop the CLS token and keep spatial patches.
+            # 去掉 CLS token，保留 Spatial Patches
             return features[:, 1:, :]
 
         # === ImageBind Logic ===
         elif self.backend == "imagebind":
-            # Extract features (ImageBind typically exposes a global feature).
-            # Official ImageBind API returns global features unless the code is modified.
-            # Keep the original behavior: return [B, 1, 1024].
+            # 强行提取特征，虽然通常只有 Global
+            # ImageBind 官方接口只给 Global，除非魔改源码
+            # 这里保持原样，返回 [B, 1, 1024]
             feats = self.model(x)
             if isinstance(feats, dict):
                 feats = feats[next(iter(feats))]

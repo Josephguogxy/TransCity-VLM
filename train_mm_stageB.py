@@ -349,6 +349,12 @@ def main():
         else:
             raise AttributeError("model has no load_full_state_dict(); cannot load Stage-A weights.")
 
+    # 如果 tokenizer vocab 跟 checkpoint 完全一致，这句不会改变任何东西；但顺序放这里更稳
+    try:
+        model.resize_token_embeddings(len(tok))
+    except Exception:
+        pass
+
     # -------- datasets --------
     assert len(data_args.train_files) > 0, "请通过 --train_files 提供至少一个 *.jsonl"
 

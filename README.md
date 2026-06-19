@@ -72,132 +72,57 @@ The core pipeline uses:
 A simplified layout (some folders omitted):
 
 ```text
-TransCity-VLM
-/
-├─ LICENSE_NOTICES.md
-├─ dataprocessing.py
-├─ ds_config_zero3.json
-├─ LICENSE
-├─ LICENSE-APACHE-2.0.txt
-├─ requirements.txt
-├─ README.md
-├─ ds_config_zero3_hfopt.json
-├─ ds_config_zero2.json
-├─ model/
-│  ├─ builder.py
-│  ├─ decoder_mixlora.py
-│  ├─ mixlora_masked.py
-│  ├─ language_model/
-│  │  └─ smartcity_llm.py
-│  ├─ multimodal_encoder/
-│  │  ├─ chunk_text_encoder.py
-│  │  ├─ imagebind_encoder.py
-│  │  └─ imagebind/
-│  │     ├─ data.py
-│  │     ├─ requirements.txt
-│  │     ├─ LICENSE-CC-BY-NC-4.0.txt
-│  │     ├─ LICENSE
-│  │     ├─ bpe/
-│  │     │  └─ bpe_simple_vocab_16e6.txt.gz
-│  │     └─ models/
-│  │        ├─ helpers.py
-│  │        ├─ imagebind_model.py
-│  │        ├─ multimodal_preprocessors.py
-│  │        └─ transformer.py
-│  ├─ multimodal_projector/
-│  │  ├─ group.py
-│  │  ├─ projector.py
-│  │  └─ vpma.py
-│  └─ reinforcement_learning/
-│     ├─ config.py
-│     ├─ logprobs.py
-│     ├─ loss.py
-│     ├─ rewards.py
-│     └─ rollout.py
-├─ agentic_system/
-│  ├─ cli.py
-│  ├─ config.py
-│  ├─ schemas.py
-│  ├─ agents/
-│  │  ├─ base.py
-│  │  ├─ bootstrap/
-│  │  │  ├─ geocode_forward.py
-│  │  │  ├─ nl_parse.py
-│  │  │  ├─ normalize.py
-│  │  │  └─ time_window.py
-│  │  ├─ demographics/
-│  │  │  └─ demographics.py
-│  │  ├─ geo/
-│  │  │  └─ geocode_reverse.py
-│  │  ├─ osm/
-│  │  │  ├─ poi.py
-│  │  │  └─ roads.py
-│  │  ├─ record/
-│  │  │  └─ record_builder.py
-│  │  ├─ satellite/
-│  │  │  ├─ fetch_gibs.py
-│  │  │  └─ store_mysql.py
-│  │  ├─ traffic/
-│  │  │  ├─ nearest_sensor.py
-│  │  │  └─ traffic_flow.py
-│  │  ├─ weather/
-│  │  │  └─ weather.py
-│  │  └─ web/
-│  │     ├─ content_fetcher.py
-│  │     ├─ events.py
-│  │     ├─ query_generator.py
-│  │     ├─ scoring.py
-│  │     └─ web_search_agent.py
-│  ├─ clients/
-│  │  ├─ cds.py
-│  │  ├─ census.py
-│  │  ├─ gibs.py
-│  │  ├─ http.py
-│  │  ├─ nominatim.py
-│  │  ├─ open_meteo.py
-│  │  ├─ overpass.py
-│  │  ├─ web_search.py
-│  │  └─ worldpop.py
-│  ├─ core/
-│  │  ├─ context.py
-│  │  ├─ executor.py
-│  │  ├─ logging.py
-│  │  ├─ plan_builder.py
-│  │  └─ runner.py
-│  ├─ db/
-│  │  ├─ flow_repo.py
-│  │  ├─ mysql_pool.py
-│  │  └─ satellite_images_repo.py
-│  ├─ llm/
-│  │  ├─ clients.py
-│  │  └─ prompts/
-│  │     └─ __init__.py
-│  └─ utils/
-│     ├─ geo.py
-│     └─ time.py
-├─ trl/
-├─ utils/
-│  └─ mixed_pr_sampler.py
-├─ train/
-│  ├─ train_mm_stageA.py
-│  ├─ train_mm_stageB.py
-│  ├─ train_mm_stageC.py
-│  ├─ train_mm_stageD.py
-│  ├─ run_grpo.sh
-│  ├─ run_stageA_ds.sh
-│  ├─ run_stageB_ds.sh
-│  └─ run_stageC_ds.sh
-└─ eval/
-   ├─ inference_mm_stageB.py
-   ├─ run_inference_stageB.sh
-   ├─ inference_mm_stageA.py
-   ├─ inference_mm_stageC.py
-   ├─ run_inference_stageA.sh
-   └─ run_inference_stageC.sh
+TransCity-VLM/
+|-- README.md
+|-- LICENSE
+|-- LICENSE-APACHE-2.0.txt
+|-- LICENSE_NOTICES.md
+|-- requirements.txt
+|-- dataprocessing.py
+|-- train_mm_stageA.py
+|-- train_mm_stageB.py
+|-- train_mm_stageC.py
+|-- train_stageD_sft_warmup.py
+|-- train_grpo.py
+|-- ds_config_zero2.json
+|-- ds_config_zero3.json
+|-- ds_config_zero3_hfopt.json
+|-- configs/
+|   |-- deepspeed_zero3.json
+|   `-- deepspeed_zero2_stageD.json
+|-- model/
+|   |-- builder.py
+|   |-- decoder_mixlora.py
+|   |-- mixlora_masked.py
+|   |-- language_model/
+|   |-- multimodal_encoder/
+|   |-- multimodal_projector/
+|   `-- reinforcement_learning/
+|-- agentic_system/
+|   |-- cli.py
+|   |-- config.py
+|   |-- schemas.py
+|   |-- agents/
+|   |-- clients/
+|   |-- core/
+|   |-- db/
+|   |-- llm/
+|   `-- utils/
+|-- train/
+|   |-- run_stageA_ds.sh
+|   |-- run_stageB_ds.sh
+|   |-- run_stageC_ds.sh
+|   |-- run_stageD_sft_warmup_ds.sh
+|   `-- run_grpo.sh
+|-- eval/
+|   |-- inference_abc.py
+|   |-- inference_grpo.py
+|   `-- inference_agentic.py
+`-- utils/
+    `-- mixed_pr_sampler.py
 ```
 
 ---
-
 ## Environment
 
 ### Option 1: venv
@@ -220,7 +145,7 @@ pip install -r requirements.txt
 
 ## Training
 
-> All `run_*.sh` scripts are templates: they avoid internal absolute paths and rely on env vars / editable defaults.
+> Training launchers are kept under `train/`. Run them from the repository root and edit environment variables or server path defaults as needed.
 
 ### Stage A
 
@@ -231,7 +156,7 @@ export TRAIN_FILES="dataset_stageA/train_understand_dataset.jsonl"
 export VAL_FILES="dataset_stageA/test_understand_dataset.jsonl"
 export OUTPUT_DIR="outputs/stageA"
 
-bash run_stageA_ds.sh
+bash train/run_stageA_ds.sh
 ```
 
 ### Stage B
@@ -244,7 +169,7 @@ export TRAIN_FILES="dataset_stageB/train_*.jsonl"
 export VAL_FILES="dataset_stageB/val_*.jsonl"
 export OUTPUT_DIR="outputs/stageB"
 
-bash run_stageB_ds.sh
+bash train/run_stageB_ds.sh
 ```
 
 ### Stage C
@@ -257,7 +182,7 @@ export TRAIN_FILES="dataset_stageC/train_*.jsonl"
 export VAL_FILES="dataset_stageC/val_*.jsonl"
 export OUTPUT_DIR="outputs/stageC"
 
-bash run_stageC_ds.sh
+bash train/run_stageC_ds.sh
 ```
 
 ### Stage-D
@@ -267,19 +192,27 @@ export SFT_DIR="outputs/stageC"
 export TRAIN_FILES="dataset_rl/train_reason.jsonl"
 export OUTPUT_DIR="outputs/grpo"
 
-bash run_grpo.sh
+bash train/run_grpo.sh
 ```
 
 ---
 
 ## Inference & Evaluation
 
-This repo typically evaluates by:
+This repo keeps three inference entry points:
+
+```bash
+python eval/inference_abc.py      # Stage-B/Stage-C style model inference and metrics
+python eval/inference_grpo.py     # GRPO / Stage-D checkpoint inference
+python eval/inference_agentic.py  # Agent data collection followed by Stage-C or GRPO inference
+```
+
+The standard evaluation flow is still:
 
 1) generating text outputs,
 2) extracting numeric sequences,
 3) computing MAE/MSE/RMSE/MAPE/wMAPE,
-4) saving `labels_*.txt`, `preds_*.txt`, `metrics_*.json`, and per-rank `raw_*.jsonl`.
+4) saving `labels_*.txt`, `preds_*.txt`, `metrics_*.json`, and per-rank `raw_*.jsonl` when supported by the selected script.
 
 ---
 
@@ -288,7 +221,7 @@ This repo typically evaluates by:
 This repository may contain **multiple licenses**:
 
 - See `LICENSE` for the repository-level license.
-- See `THIRD_PARTY_NOTICES.md` for bundled/third-party components and their licenses.
+- See `LICENSE_NOTICES.md` for bundled/third-party components and their licenses.
 - Some components (e.g., certain multimodal encoders) may be **non-commercial** — check carefully before commercial usage.
 
 ---
